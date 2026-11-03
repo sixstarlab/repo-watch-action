@@ -1,7 +1,5 @@
 # SixStar repository watch
 
-Not open yet: the Account page steps below appear once SixStar switches private repository watching on.
-
 Watch a private repository's dependencies with SixStar, without giving us your code or GitHub access.
 
 This Action runs in your own GitHub Actions runner. It reads your lockfiles there, turns each into a list of package
