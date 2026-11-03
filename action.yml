@@ -1,0 +1,16 @@
+name: SixStar repository watch
+description: Sends your repository's package names and versions to SixStar's watch. Your code and lockfile text stay in your runner.
+inputs:
+  key:
+    description: A SixStar API key with the scope "Send private repository package lists". Keep it as a repository secret.
+    required: true
+  site:
+    description: The SixStar site address, as your Account page's example gives it.
+    required: true
+  lockfiles:
+    description: The lockfiles to read, relative to the repository root, separated by commas. Default package-lock.json, pnpm-lock.yaml and yarn.lock at the root.
+    required: false
+    default: ""
+runs:
+  using: node20
+  main: dist/index.js
