@@ -11,6 +11,10 @@ inputs:
     description: The lockfiles to read, relative to the repository root, separated by commas. Default package-lock.json, pnpm-lock.yaml and yarn.lock at the root.
     required: false
     default: ""
+  pr_check:
+    description: Set to "on" to check each pull request. The step must also run on pull_request. Off unless set.
+    required: false
+    default: ""
 runs:
   using: node20
   main: dist/index.js

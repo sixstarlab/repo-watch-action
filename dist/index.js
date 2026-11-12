@@ -17,6 +17,7 @@ __export(repoWatch_exports, {
   OSV_BATCH_MAX: () => OSV_BATCH_MAX,
   OSV_ECOSYSTEM: () => OSV_ECOSYSTEM,
   OSV_ENTRIES_MAX: () => OSV_ENTRIES_MAX,
+  OSV_PYPI: () => OSV_PYPI,
   OSV_RECORDS_PER_ENTRY_MAX: () => OSV_RECORDS_PER_ENTRY_MAX,
   OSV_SEEN_MAX: () => OSV_SEEN_MAX,
   RELEASES_PAGE_MAX: () => RELEASES_PAGE_MAX,
@@ -534,12 +535,22 @@ function maintainerChange(doc, oldVersion, newVersion) {
 
 // packages/core/src/repoWatch/osvCheck.ts
 var OSV_ECOSYSTEM = "npm";
+var OSV_PYPI = "PyPI";
 var OSV_BATCH_MAX = 1e3;
 var OSV_ENTRIES_MAX = 2e4;
 var OSV_SEEN_MAX = 2e4;
 var OSV_RECORDS_PER_ENTRY_MAX = 1e3;
 var PACKAGE_NAME_PATTERN = /^(@[A-Za-z0-9~-][A-Za-z0-9._~-]*\/)?[A-Za-z0-9~-][A-Za-z0-9._~-]*$/;
 var SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+var PYPI_VERSION_PATTERN = /^(?:[0-9]+!)?(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*(?:[._-]?[A-Za-z]+[._-]?[0-9]*)*(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?$/;
+var PYPI_VERSION_MAX = 64;
+function versionOk(version, ecosystem) {
+  if (ecosystem === OSV_PYPI) return version.length >= 1 && version.length <= PYPI_VERSION_MAX && PYPI_VERSION_PATTERN.test(version);
+  return version.length >= 1 && version.length <= 256 && SEMVER_PATTERN.test(version);
+}
+function anyVersionOk(version) {
+  return versionOk(version, OSV_ECOSYSTEM) || versionOk(version, OSV_PYPI);
+}
 var RECORD_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 var PAGE_TOKEN_PATTERN = /^[!-~]{1,4096}$/;
 function isPlainRecord(val) {
@@ -565,7 +576,7 @@ function isValidKey(key) {
     return false;
   }
   const version = key.slice(lastAt + 1, spaceIdx);
-  if (version.length < 1 || version.length > 256 || !SEMVER_PATTERN.test(version)) {
+  if (!anyVersionOk(version)) {
     return false;
   }
   const record = key.slice(spaceIdx + 1);
@@ -574,8 +585,11 @@ function isValidKey(key) {
   }
   return true;
 }
-function osvBatches(entries) {
+function osvBatches(entries, ecosystem = OSV_ECOSYSTEM) {
   try {
+    if (ecosystem !== OSV_ECOSYSTEM && ecosystem !== OSV_PYPI) {
+      return null;
+    }
     if (!Array.isArray(entries)) {
       return null;
     }
@@ -600,7 +614,7 @@ function osvBatches(entries) {
       if (name.length < 1 || name.length > 214 || !PACKAGE_NAME_PATTERN.test(name)) {
         return null;
       }
-      if (version.length < 1 || version.length > 256 || !SEMVER_PATTERN.test(version)) {
+      if (!versionOk(version, ecosystem)) {
         skipped++;
         continue;
       }
@@ -623,7 +637,7 @@ function osvBatches(entries) {
       const queries = [];
       for (let j = 0; j < slice.length; j++) {
         queries.push({
-          package: { name: slice[j].name, ecosystem: OSV_ECOSYSTEM },
+          package: { name: slice[j].name, ecosystem },
           version: slice[j].version
         });
       }
@@ -643,6 +657,7 @@ function osvRead(batch, answer) {
     if (queries.length < 1 || queries.length > OSV_BATCH_MAX) {
       return null;
     }
+    let ecosystem = null;
     for (let i = 0; i < queries.length; i++) {
       const q = queries[i];
       if (!isPlainRecord(q)) return null;
@@ -652,10 +667,15 @@ function osvRead(batch, answer) {
       if (typeof pkgName !== "string" || pkgName.length < 1 || pkgName.length > 214 || !PACKAGE_NAME_PATTERN.test(pkgName)) {
         return null;
       }
-      if (pkgEco !== OSV_ECOSYSTEM) {
+      if (pkgEco !== OSV_ECOSYSTEM && pkgEco !== OSV_PYPI) {
         return null;
       }
-      if (typeof q.version !== "string" || q.version.length < 1 || q.version.length > 256 || !SEMVER_PATTERN.test(q.version)) {
+      if (ecosystem === null) {
+        ecosystem = pkgEco;
+      } else if (pkgEco !== ecosystem) {
+        return null;
+      }
+      if (typeof q.version !== "string" || !versionOk(q.version, ecosystem)) {
         return null;
       }
       if (Object.prototype.hasOwnProperty.call(q, "page_token")) {
@@ -703,7 +723,7 @@ function osvRead(batch, answer) {
         }
         const q2 = queries[i];
         nextQueries.push({
-          package: { name: q2.package.name, ecosystem: OSV_ECOSYSTEM },
+          package: { name: q2.package.name, ecosystem: q2.package.ecosystem },
           version: q2.version,
           page_token: npt
         });
@@ -750,7 +770,7 @@ function osvFindings(previous, results) {
       if (typeof name !== "string" || name.length < 1 || name.length > 214 || !PACKAGE_NAME_PATTERN.test(name)) {
         return null;
       }
-      if (typeof version !== "string" || version.length < 1 || version.length > 256 || !SEMVER_PATTERN.test(version)) {
+      if (typeof version !== "string" || !anyVersionOk(version)) {
         return null;
       }
       if (!Array.isArray(records)) return null;
@@ -1268,6 +1288,653 @@ function readYarnLock(text) {
   }
 }
 
+// packages/core/src/supplyChain/index.ts
+var supplyChain_exports = {};
+__export(supplyChain_exports, {
+  DEPS_DEV_BATCH_MAX: () => DEPS_DEV_BATCH_MAX,
+  DEPS_DEV_BATCH_PATH: () => DEPS_DEV_BATCH_PATH,
+  DEPS_DEV_HOST: () => DEPS_DEV_HOST,
+  DEPS_DEV_YOUNG_MS: () => DEPS_DEV_YOUNG_MS,
+  DOCKER_HUB_REGISTRY: () => DOCKER_HUB_REGISTRY,
+  FIRST_PARTY_OWNERS: () => FIRST_PARTY_OWNERS,
+  FULL_SHA: () => FULL_SHA,
+  IMAGE_FILE_MAX_BYTES: () => IMAGE_FILE_MAX_BYTES,
+  KNOWN_BAD_IMAGES: () => KNOWN_BAD_IMAGES,
+  KNOWN_COMPROMISED_ACTIONS: () => KNOWN_COMPROMISED_ACTIONS,
+  MCP_MAX_BYTES: () => MCP_MAX_BYTES,
+  MCP_MAX_SERVERS: () => MCP_MAX_SERVERS,
+  OSV_ACTIONS_ECOSYSTEM: () => OSV_ACTIONS_ECOSYSTEM,
+  WORKFLOW_MAX_BYTES: () => WORKFLOW_MAX_BYTES,
+  actionRefAffected: () => actionRefAffected,
+  depsDevBatchBody: () => depsDevBatchBody,
+  depsDevVersionUrl: () => depsDevVersionUrl,
+  dockerHubTagPath: () => dockerHubTagPath,
+  findKnownBadImage: () => findKnownBadImage,
+  holdsVariable: () => holdsVariable,
+  imageFileSource: () => imageFileSource,
+  imageLabel: () => imageLabel,
+  isReleaseTag: () => isReleaseTag,
+  isYoung: () => isYoung,
+  knownBadDigest: () => knownBadDigest,
+  osvActionPackageQueries: () => osvActionPackageQueries,
+  osvActionQueries: () => osvActionQueries,
+  parseImageRef: () => parseImageRef,
+  readActionRef: () => readActionRef,
+  readDepsDevBatch: () => readDepsDevBatch,
+  readDepsDevVersion: () => readDepsDevVersion,
+  readDockerHubTag: () => readDockerHubTag,
+  readImages: () => readImages,
+  readMcpConfig: () => readMcpConfig,
+  readOsvActionAnswer: () => readOsvActionAnswer,
+  readOsvPackageAnswer: () => readOsvPackageAnswer,
+  readWorkflow: () => readWorkflow,
+  runnerPackage: () => runnerPackage,
+  secretTriggers: () => secretTriggers,
+  shortDigest: () => shortDigest,
+  splitNpmSpec: () => splitNpmSpec,
+  splitPySpec: () => splitPySpec
+});
+
+// packages/core/src/supplyChain/workflows.ts
+var FIRST_PARTY_OWNERS = ["actions", "github"];
+var FULL_SHA = /^[0-9a-f]{40}$/;
+var WORKFLOW_MAX_BYTES = 512 * 1024;
+var OSV_ACTIONS_ECOSYSTEM = "GitHub Actions";
+var KNOWN_COMPROMISED_ACTIONS = [
+  { action: "tj-actions/changed-files", advisory: "CVE-2025-30066", what: "its tags were moved to code that printed the workflow's secrets into the build log (March 2025)." },
+  { action: "reviewdog/action-setup", advisory: "CVE-2025-30154", what: "its v1 tag was moved to code that printed the workflow's secrets into the build log (March 2025)." }
+];
+var USES_LINE = /^\s*(?:-\s+)?uses\s*:\s*(.+?)\s*$/;
+var OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+var REPO = /^[A-Za-z0-9._-]{1,100}$/;
+var HEAD_REF = /github\.event\.pull_request\.head\.(?:sha|ref)|github\.head_ref|github\.event\.workflow_run\.head_(?:sha|branch)|refs\/pull\/[^\s'"]*\/(?:head|merge)/;
+function stripComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === "#" && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+function unquote(v) {
+  const t = v.trim();
+  if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) return t.slice(1, -1).trim();
+  return t;
+}
+function readActionRef(value, line = 0) {
+  const uses = unquote(value);
+  if (uses === "" || uses.startsWith("./") || uses.startsWith("../") || uses.startsWith("docker://")) return null;
+  const at = uses.indexOf("@");
+  const target = at === -1 ? uses : uses.slice(0, at);
+  const ref = at === -1 ? "" : uses.slice(at + 1);
+  const parts = target.split("/");
+  if (parts.length < 2) return null;
+  const owner = parts[0];
+  const repo = parts[1];
+  if (!OWNER.test(owner) || !REPO.test(repo) || repo === "." || repo === "..") return null;
+  const firstParty = FIRST_PARTY_OWNERS.includes(owner.toLowerCase());
+  return { line, uses, owner, repo, action: `${owner}/${repo}`.toLowerCase(), ref, pinned: FULL_SHA.test(ref), firstParty };
+}
+function secretTriggers(text) {
+  const out = [];
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  let inJobs = false;
+  for (const raw of lines) {
+    const line = stripComment(raw);
+    if (/^jobs\s*:/.test(line)) inJobs = true;
+    if (inJobs) continue;
+    for (const t of ["pull_request_target", "workflow_run"]) {
+      if (new RegExp(`(^|[\\s\\[,'"])${t}(?=$|[\\s\\],:'"])`).test(line) && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+function readWorkflow(text, compromised = KNOWN_COMPROMISED_ACTIONS) {
+  if (typeof text !== "string" || text.length > WORKFLOW_MAX_BYTES) return null;
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (!lines.some((l) => /^jobs\s*:/.test(stripComment(l)))) return null;
+  const uses = [];
+  const findings = [];
+  const triggers = secretTriggers(text);
+  let headRefFound = false;
+  lines.forEach((raw, i) => {
+    const line = stripComment(raw);
+    const m = USES_LINE.exec(line);
+    if (m) {
+      const use = readActionRef(m[1], i + 1);
+      if (use) {
+        uses.push(use);
+        const bad = compromised.find((c) => c.action === use.action);
+        if (bad && !use.pinned) {
+          findings.push({ kind: "KNOWN_COMPROMISED_ACTION", line: use.line, subject: use.action, detail: use.ref, advisory: bad.advisory });
+        } else if (!use.pinned && !use.firstParty) {
+          findings.push({ kind: "UNPINNED_ACTION", line: use.line, subject: use.action, detail: use.ref });
+        }
+      }
+    }
+    if (triggers.length > 0 && !headRefFound) {
+      const r = /^\s*(?:-\s+)?ref\s*:\s*(.+?)\s*$/.exec(line);
+      if (r && HEAD_REF.test(r[1])) {
+        headRefFound = true;
+        findings.push({ kind: "PRT_CHECKOUT_HEAD", line: i + 1, subject: triggers[0], detail: unquote(r[1]) });
+      }
+    }
+  });
+  return { uses, findings };
+}
+function osvActionQueries(uses, max = 200) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const u of uses) {
+    if (u.pinned || u.firstParty || u.ref === "" || !/^v?\d+(?:\.\d+){0,2}$/.test(u.ref)) continue;
+    for (const version of [u.ref, u.ref.replace(/^v/, "")]) {
+      const k = `${u.action}@${version}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ package: { name: u.action, ecosystem: OSV_ACTIONS_ECOSYSTEM }, version });
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+function osvActionPackageQueries(uses, max = 100) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const u of uses) {
+    if (u.pinned || u.firstParty || !/^v?\d+(?:\.\d+){0,2}$/.test(u.ref) || seen.has(u.action)) continue;
+    seen.add(u.action);
+    out.push({ package: { name: u.action, ecosystem: OSV_ACTIONS_ECOSYSTEM } });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+function readOsvPackageAnswer(body, queries) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.results)) return null;
+  const results = parsed.results;
+  if (results.length !== queries.length) return null;
+  return results.map((r, i) => {
+    const vulns = r && typeof r === "object" ? r.vulns : void 0;
+    const records = (Array.isArray(vulns) ? vulns : []).map((v) => v && typeof v === "object" ? v.id : void 0).filter((id) => typeof id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(id));
+    return { action: queries[i].package.name, records: [...new Set(records)] };
+  });
+}
+function tagNumbers(v) {
+  const m = /^v?(\d+(?:\.\d+){0,2})$/.exec(v.trim());
+  return m ? m[1].split(".").map(Number) : null;
+}
+function compareTags(a, b) {
+  for (let i = 0; i < 3; i += 1) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+function actionRefAffected(record, action, ref) {
+  const at = tagNumbers(ref);
+  if (!at || !record || typeof record !== "object") return false;
+  const rec = record;
+  if (typeof rec.withdrawn === "string" && rec.withdrawn !== "") return false;
+  for (const a of Array.isArray(rec.affected) ? rec.affected : []) {
+    const pkg = a && typeof a === "object" ? a.package : void 0;
+    if (pkg?.ecosystem !== OSV_ACTIONS_ECOSYSTEM || String(pkg?.name ?? "").toLowerCase() !== action.toLowerCase()) continue;
+    const versions = a.versions;
+    for (const v of Array.isArray(versions) ? versions : []) {
+      const n = typeof v === "string" ? tagNumbers(v) : null;
+      if (n && compareTags(n, at) === 0) return true;
+    }
+    const ranges = a.ranges;
+    for (const r of Array.isArray(ranges) ? ranges : []) {
+      const type = r && typeof r === "object" ? r.type : void 0;
+      if (type !== "ECOSYSTEM" && type !== "SEMVER") continue;
+      let inside = false;
+      for (const e of Array.isArray(r.events) ? r.events : []) {
+        if (!e || typeof e !== "object") continue;
+        const ev = e;
+        if (typeof ev.introduced === "string") {
+          const n = ev.introduced === "0" ? [0] : tagNumbers(ev.introduced);
+          if (n && compareTags(at, n) >= 0) inside = true;
+        } else if (typeof ev.fixed === "string") {
+          const n = tagNumbers(ev.fixed);
+          if (n && inside && compareTags(at, n) < 0) return true;
+          if (n && compareTags(at, n) >= 0) inside = false;
+        } else if (typeof ev.last_affected === "string") {
+          const n = tagNumbers(ev.last_affected);
+          if (n && inside && compareTags(at, n) <= 0) return true;
+          if (n && compareTags(at, n) > 0) inside = false;
+        }
+      }
+      if (inside) return true;
+    }
+  }
+  return false;
+}
+function readOsvActionAnswer(body, queries) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.results)) return null;
+  const results = parsed.results;
+  if (results.length !== queries.length) return null;
+  const out = [];
+  results.forEach((r, i) => {
+    const vulns = r && typeof r === "object" ? r.vulns : void 0;
+    if (!Array.isArray(vulns)) return;
+    const records = vulns.map((v) => v && typeof v === "object" ? v.id : void 0).filter((id) => typeof id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(id));
+    if (records.length > 0) out.push({ action: queries[i].package.name, version: queries[i].version, records });
+  });
+  return out;
+}
+
+// packages/core/src/supplyChain/mcpConfig.ts
+var MCP_MAX_BYTES = 256 * 1024;
+var MCP_MAX_SERVERS = 200;
+var NPM_RUNNERS = /* @__PURE__ */ new Set(["npx", "bunx"]);
+var NPM_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+var PY_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+var SECRET_NAME = /(key|token|secret|passw(or)?d|private|credential|mnemonic|seed|auth)/i;
+var SECRET_SHAPES = [
+  /^sk-[A-Za-z0-9_-]{16,}$/,
+  /^gh[pousr]_[A-Za-z0-9]{20,}$/,
+  /^github_pat_[A-Za-z0-9_]{20,}$/,
+  /^xox[abprs]-[A-Za-z0-9-]{10,}$/,
+  /^AKIA[0-9A-Z]{16}$/,
+  /^(0x)?[0-9a-fA-F]{64}$/
+];
+var LOCAL_HOSTS = /* @__PURE__ */ new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+function isPlaceholder(v) {
+  const t = v.trim();
+  return t === "" || /^\$\{[^}]*\}$/.test(t) || /^\$[A-Z_][A-Z0-9_]*$/.test(t) || /^<[^>]*>$/.test(t) || /^(your|my|xxx|changeme|replace)/i.test(t) || /^[x*.]+$/i.test(t);
+}
+function looksSecret(name, value) {
+  if (isPlaceholder(value)) return false;
+  if (SECRET_SHAPES.some((r) => r.test(value.trim()))) return true;
+  return SECRET_NAME.test(name) && value.trim().length >= 12 && !/\s/.test(value.trim());
+}
+function splitNpmSpec(spec) {
+  const at = spec.lastIndexOf("@");
+  const name = at > 0 ? spec.slice(0, at) : spec;
+  const version = at > 0 ? spec.slice(at + 1) : null;
+  if (!NPM_NAME.test(name.toLowerCase()) || name.length > 214) return null;
+  return { name: name.toLowerCase(), version: version === "" ? null : version };
+}
+function splitPySpec(spec) {
+  const m = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?:==([A-Za-z0-9.!+_-]+))?$/.exec(spec);
+  if (!m || !PY_NAME.test(m[1])) return null;
+  return { name: m[1].toLowerCase().replace(/[-_.]+/g, "-"), version: m[2] ?? null };
+}
+function runnerPackage(command, args) {
+  const cmd = (command.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.(cmd|exe)$/, "");
+  let rest = [...args];
+  let ecosystem = null;
+  if (NPM_RUNNERS.has(cmd)) ecosystem = "npm";
+  else if ((cmd === "pnpm" || cmd === "yarn") && rest[0] === "dlx") {
+    ecosystem = "npm";
+    rest = rest.slice(1);
+  } else if (cmd === "uvx") ecosystem = "PyPI";
+  else if (cmd === "pipx" && rest[0] === "run") {
+    ecosystem = "PyPI";
+    rest = rest.slice(1);
+  }
+  if (!ecosystem) return null;
+  for (let i = 0; i < rest.length - 1; i++) {
+    if (rest[i] === "--from" || rest[i] === "--package" || rest[i] === "-p" || rest[i] === "--spec") {
+      const s2 = ecosystem === "npm" ? splitNpmSpec(rest[i + 1]) : splitPySpec(rest[i + 1]);
+      return s2 ? { ecosystem, ...s2 } : null;
+    }
+  }
+  const first = rest.find((a) => !a.startsWith("-"));
+  if (!first) return null;
+  const s = ecosystem === "npm" ? splitNpmSpec(first) : splitPySpec(first);
+  return s ? { ecosystem, ...s } : null;
+}
+function strings(v) {
+  return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+}
+function hostOf(url) {
+  try {
+    const u = new URL(url);
+    return { protocol: u.protocol, host: u.hostname.toLowerCase() };
+  } catch {
+    return null;
+  }
+}
+function readMcpConfig(text) {
+  if (typeof text !== "string" || text.length > MCP_MAX_BYTES) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const root = parsed;
+  const table = root.mcpServers ?? root.servers;
+  if (!table || typeof table !== "object" || Array.isArray(table)) return null;
+  const findings = [];
+  const packages = [];
+  const entries = Object.entries(table).slice(0, MCP_MAX_SERVERS);
+  for (const [rawName, cfg] of entries) {
+    const server = rawName.slice(0, 100);
+    if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) continue;
+    const c = cfg;
+    const command = typeof c.command === "string" ? c.command : "";
+    const args = strings(c.args);
+    const url = typeof c.url === "string" ? c.url : typeof c.serverUrl === "string" ? c.serverUrl : "";
+    if (command) {
+      const pkg = runnerPackage(command, args);
+      if (pkg) {
+        packages.push({ server, ...pkg });
+        if (pkg.version === null || pkg.version === "latest") findings.push({ kind: "MCP_UNPINNED_PACKAGE", server, subject: pkg.name });
+      }
+      const shell = (command.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
+      const joined = args.join(" ");
+      if (["sh", "bash", "zsh", "powershell", "pwsh", "cmd"].includes(shell) && /\b(curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b/i.test(joined) && /(\|\s*(sh|bash|iex|invoke-expression)\b|\biex\b)/i.test(joined)) {
+        findings.push({ kind: "MCP_SHELL_DOWNLOAD", server, subject: shell });
+      }
+    }
+    if (url) {
+      const h = hostOf(url);
+      if (h) {
+        if (h.protocol === "http:" && !LOCAL_HOSTS.has(h.host)) findings.push({ kind: "MCP_PLAIN_HTTP", server, subject: h.host });
+        if (!LOCAL_HOSTS.has(h.host)) findings.push({ kind: "MCP_REMOTE_SERVER", server, subject: h.host });
+      }
+    }
+    for (const field of ["env", "headers"]) {
+      const obj = c[field];
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue;
+      for (const [k, v] of Object.entries(obj)) {
+        if (typeof v === "string" && looksSecret(k, v.replace(/^Bearer\s+/i, ""))) findings.push({ kind: "MCP_INLINE_SECRET", server, subject: `${field}.${k}`.slice(0, 120) });
+      }
+    }
+    args.forEach((a, i) => {
+      if (SECRET_SHAPES.some((r) => r.test(a.trim()))) findings.push({ kind: "MCP_INLINE_SECRET", server, subject: `args[${i}]` });
+    });
+  }
+  return { servers: entries.length, findings, packages };
+}
+
+// packages/core/src/supplyChain/depsDev.ts
+var DEPS_DEV_HOST = "api.deps.dev";
+var DEPS_DEV_BATCH_PATH = "/v3alpha/versionbatch";
+var DEPS_DEV_BATCH_MAX = 1e3;
+var DEPS_DEV_YOUNG_MS = 48 * 60 * 60 * 1e3;
+function depsDevVersionUrl(host, key) {
+  return ["https", "://"].join("") + `${host}/v3/systems/${key.system.toLowerCase()}/packages/${encodeURIComponent(key.name)}/versions/${encodeURIComponent(key.version)}`;
+}
+function depsDevBatchBody(keys) {
+  const seen = /* @__PURE__ */ new Set();
+  const requests = [];
+  for (const k of keys) {
+    const id = `${k.system}|${k.name}|${k.version}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    requests.push({ versionKey: { system: k.system, name: k.name, version: k.version } });
+    if (requests.length >= DEPS_DEV_BATCH_MAX) break;
+  }
+  return { requests };
+}
+function isObj(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+function readVersionObject(v, fallback) {
+  if (!isObj(v)) return null;
+  const vk = isObj(v.versionKey) ? v.versionKey : null;
+  const key = vk && typeof vk.name === "string" && typeof vk.version === "string" && typeof vk.system === "string" ? { system: vk.system.toUpperCase(), name: vk.name, version: vk.version } : fallback ?? null;
+  if (!key) return null;
+  const publishedAt2 = typeof v.publishedAt === "string" && !Number.isNaN(Date.parse(v.publishedAt)) ? v.publishedAt : null;
+  const advisories = Array.isArray(v.advisoryKeys) ? v.advisoryKeys.map((a) => isObj(a) && typeof a.id === "string" ? a.id : null).filter((x) => x !== null && /^[A-Za-z0-9._:-]{1,128}$/.test(x)) : [];
+  return { key, publishedAt: publishedAt2, advisories, deprecated: v.isDeprecated === true };
+}
+function readDepsDevVersion(body) {
+  try {
+    return readVersionObject(JSON.parse(body));
+  } catch {
+    return null;
+  }
+}
+function readDepsDevBatch(body) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!isObj(parsed) || !Array.isArray(parsed.responses)) return null;
+  const out = [];
+  for (const r of parsed.responses) {
+    if (!isObj(r)) continue;
+    const req = isObj(r.request) && isObj(r.request.versionKey) ? r.request.versionKey : null;
+    const fallback = req && typeof req.name === "string" && typeof req.version === "string" && typeof req.system === "string" ? { system: req.system.toUpperCase(), name: req.name, version: req.version } : void 0;
+    const v = readVersionObject(r.version, fallback);
+    if (v) out.push(v);
+  }
+  return out;
+}
+function isYoung(publishedAt2, nowMs, limitMs = DEPS_DEV_YOUNG_MS) {
+  if (!publishedAt2) return false;
+  const t = Date.parse(publishedAt2);
+  if (Number.isNaN(t) || t > nowMs) return false;
+  return nowMs - t < limitMs;
+}
+
+// packages/core/src/supplyChain/images.ts
+var IMAGE_FILE_MAX_BYTES = 512 * 1024;
+var DOCKER_HUB_REGISTRY = "docker.io";
+var DIGEST = /^sha256:[0-9a-f]{64}$/;
+var COMPONENT = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/;
+var TAG = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+var HUB_ALIASES = /* @__PURE__ */ new Set(["docker.io", "index.docker.io", "registry-1.docker.io", "registry.hub.docker.com"]);
+function imageFileSource(path) {
+  if (typeof path !== "string" || path === "") return null;
+  const parts = path.split("/");
+  const base = parts[parts.length - 1];
+  if (/^\.github\/workflows\/[^/]+\.ya?ml$/i.test(path)) return "workflow";
+  if (/^(?:docker-)?compose(?:\.[A-Za-z0-9_.-]+)?\.ya?ml$/i.test(base)) return "compose";
+  if (/^(?:Dockerfile|Containerfile)(?:\.[A-Za-z0-9_.-]+)?$/.test(base) || /^[A-Za-z0-9_.-]+\.Dockerfile$/.test(base)) return "dockerfile";
+  return null;
+}
+function stripComment2(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === "#" && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+function unquote2(v) {
+  const t = v.trim();
+  if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) return t.slice(1, -1).trim();
+  return t;
+}
+function holdsVariable(v) {
+  return v.includes("$");
+}
+function parseImageRef(value) {
+  if (typeof value !== "string") return null;
+  let raw = unquote2(value);
+  if (raw.startsWith("docker://")) raw = raw.slice("docker://".length);
+  if (raw === "" || raw.length > 512 || /\s/.test(raw) || holdsVariable(raw)) return null;
+  let rest = raw;
+  let digest = null;
+  const at = rest.indexOf("@");
+  if (at !== -1) {
+    digest = rest.slice(at + 1);
+    rest = rest.slice(0, at);
+    if (!DIGEST.test(digest)) return null;
+  }
+  const slash = rest.lastIndexOf("/");
+  const colon = rest.lastIndexOf(":");
+  let tag = null;
+  if (colon > slash) {
+    tag = rest.slice(colon + 1);
+    rest = rest.slice(0, colon);
+    if (!TAG.test(tag)) return null;
+  }
+  const parts = rest.split("/");
+  let registry = DOCKER_HUB_REGISTRY;
+  if (parts.length > 1 && (parts[0].includes(".") || parts[0].includes(":") || parts[0] === "localhost")) {
+    registry = parts.shift().toLowerCase();
+    if (HUB_ALIASES.has(registry)) registry = DOCKER_HUB_REGISTRY;
+  }
+  if (parts.length === 0 || parts.some((p) => !COMPONENT.test(p))) return null;
+  const dockerHub = registry === DOCKER_HUB_REGISTRY;
+  if (dockerHub && parts.length === 1) parts.unshift("library");
+  const repository = parts.join("/");
+  const implicitTag = tag === null && digest === null;
+  return {
+    raw,
+    registry,
+    repository,
+    tag: implicitTag ? "latest" : tag,
+    implicitTag,
+    digest,
+    pinned: digest !== null,
+    dockerHub,
+    name: `${registry}/${repository}`
+  };
+}
+function imageLabel(ref) {
+  const repo = ref.registry === DOCKER_HUB_REGISTRY ? ref.repository.replace(/^library\//, "") : `${ref.registry}/${ref.repository}`;
+  return `${repo}${ref.tag !== null ? `:${ref.tag}` : ""}${ref.digest !== null ? `@${ref.digest}` : ""}`;
+}
+function isReleaseTag(tag) {
+  return typeof tag === "string" && /^v?\d+\.\d+\.\d+(?:[-+._][A-Za-z0-9._-]+)?$/.test(tag);
+}
+var KEY_LINE = /^(\s*)(-\s+)?([A-Za-z0-9_.-]+)\s*:(?:\s+(.*?))?\s*$/;
+function readYamlImages(text, source) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const stack = [];
+  const found = [];
+  lines.forEach((rawLine, i) => {
+    const line = stripComment2(rawLine);
+    if (line.trim() === "") return;
+    const m = KEY_LINE.exec(line);
+    if (!m) return;
+    const indent = m[1].length + (m[2] ? m[2].length : 0);
+    const key = m[3];
+    const value = (m[4] ?? "").trim();
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+    const under = (k) => stack.some((f) => f.key === k);
+    if (source === "compose") {
+      if (key === "image" && value !== "") found.push({ line: i + 1, value });
+    } else if (key === "image" && value !== "" && (under("container") || under("services"))) {
+      found.push({ line: i + 1, value });
+    } else if (key === "container" && value !== "") {
+      if (value.startsWith("{")) {
+        const flow = /(?:^|[{,\s])image\s*:\s*([^,}]+)/.exec(value);
+        if (flow) found.push({ line: i + 1, value: flow[1].trim() });
+      } else if (!/^[|>&*!]/.test(value)) {
+        found.push({ line: i + 1, value });
+      }
+    } else if (key === "uses" && unquote2(value).startsWith("docker://")) {
+      found.push({ line: i + 1, value });
+    }
+    stack.push({ indent, key });
+  });
+  return { uses: found };
+}
+function readDockerfileImages(text) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const stages = /* @__PURE__ */ new Set();
+  const found = [];
+  lines.forEach((line, i) => {
+    const m = /^\s*FROM\s+(.+?)\s*$/i.exec(line);
+    if (!m) return;
+    const tokens = m[1].split(/\s+/).filter((t) => !t.startsWith("--"));
+    const image = tokens[0];
+    if (!image) return;
+    if (tokens.length >= 3 && tokens[1].toLowerCase() === "as") stages.add(tokens[2].toLowerCase());
+    const lower = image.toLowerCase();
+    if (lower === "scratch" || stages.has(lower)) return;
+    found.push({ line: i + 1, value: image });
+  });
+  return { uses: found };
+}
+function readImages(path, text) {
+  const source = imageFileSource(path);
+  if (source === null || typeof text !== "string" || text.length > IMAGE_FILE_MAX_BYTES) return null;
+  const found = source === "dockerfile" ? readDockerfileImages(text) : readYamlImages(text, source);
+  const uses = [];
+  const unread = [];
+  for (const f of found.uses) {
+    const v = unquote2(f.value);
+    if (holdsVariable(v)) {
+      unread.push({ line: f.line, raw: v.slice(0, 200) });
+      continue;
+    }
+    const ref = parseImageRef(v);
+    if (ref) uses.push({ ...ref, line: f.line, source });
+    else unread.push({ line: f.line, raw: v.slice(0, 200) });
+  }
+  return { source, uses, unread };
+}
+function dockerHubTagPath(ref) {
+  if (!ref.dockerHub || ref.tag === null) return null;
+  const parts = ref.repository.split("/");
+  if (parts.length !== 2) return null;
+  return `/v2/namespaces/${encodeURIComponent(parts[0])}/repositories/${encodeURIComponent(parts[1])}/tags/${encodeURIComponent(ref.tag)}`;
+}
+function readDockerHubTag(body) {
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const o = parsed;
+  let digest = o.digest;
+  if (typeof digest !== "string" && Array.isArray(o.images) && o.images.length === 1) {
+    digest = o.images[0]?.digest;
+  }
+  if (typeof digest !== "string" || !DIGEST.test(digest)) return null;
+  return { digest, pushedAt: typeof o.tag_last_pushed === "string" ? o.tag_last_pushed : null };
+}
+var KICS = "docker.io/checkmarx/kics";
+var KICS_ADVISORY = "Docker and Checkmarx";
+var KNOWN_BAD_IMAGES = [
+  { name: KICS, tags: ["alpine", "v2.1.20", "v2.1.21"], hexA: "2588a44890263a8185bd5d9fadb6bc92", hexB: "20b60245dbcbc4da35e1b62a6f8c230d", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["alpine", "v2.1.20", "v2.1.21"], hexA: "d186161ae8e33cd7702dd2a6c0337deb", hexB: "14e2b178542d232129c0da64b1af06e4", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["alpine", "v2.1.20", "v2.1.21"], hexA: "415610a42c5b51347709e315f5efb6ff", hexB: "fa588b6ebc1b95b24abf28088347791b", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["debian", "v2.1.20-debian", "v2.1.21-debian"], hexA: "222e6bfed0f3bb1937bf5e719a234287", hexB: "1ccd683ff1c0cb967c8e31ea58beaf7b", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["debian", "v2.1.20-debian", "v2.1.21-debian"], hexA: "a6871deb0480e1205c1daff10cedf4e6", hexB: "0ad951605fd1a4efaca0a9c54d56d1cb", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["debian", "v2.1.20-debian", "v2.1.21-debian"], hexA: "ff7b0f114f87c67402dfc2459bb3d895", hexB: "4dd88e537b0e459482c04cffa26c1f07", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["latest"], hexA: "a0d9366f6f0166dcbf92fcdc98e1a03d", hexB: "2e6210e8d7e8573f74d50849130651a0", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["latest"], hexA: "26e8e9c5e53c972997a278ca6e12708b", hexB: "8788b70575ca013fd30bfda34ab5f48f", advisory: KICS_ADVISORY, date: "2026-04-22" },
+  { name: KICS, tags: ["latest"], hexA: "7391b531a07fccbbeaf59a488e1376cf", hexB: "e5b27aef757430a36d6d3a087c610322", advisory: KICS_ADVISORY, date: "2026-04-22" }
+];
+function knownBadDigest(e) {
+  return /^[0-9a-f]{32}$/.test(e.hexA) && /^[0-9a-f]{32}$/.test(e.hexB) ? `sha256:${e.hexA}${e.hexB}` : null;
+}
+function findKnownBadImage(name, digest, list = KNOWN_BAD_IMAGES) {
+  if (digest === null) return null;
+  return list.find((e) => e.name === name && knownBadDigest(e) === digest) ?? null;
+}
+function shortDigest(digest) {
+  return digest.startsWith("sha256:") ? `sha256:${digest.slice(7, 19)}` : digest.slice(0, 19);
+}
+
 // apps/watch/src/outside/npmOsv.ts
 var DAY_MS = 24 * 60 * 60 * 1e3;
 
@@ -1280,8 +1947,66 @@ var DEFAULT_LOCKFILE_PATHS = [
   "pnpm-lock.yaml",
   "yarn.lock"
 ];
+var PYPI_LOCKS_ON = true;
+var pypiLocksForTest;
+function pypiLocksIsOn() {
+  return pypiLocksForTest ?? PYPI_LOCKS_ON;
+}
+function isPythonLockPath(path) {
+  const lower = path.toLowerCase();
+  const base = lower.slice(lower.lastIndexOf("/") + 1);
+  if (base === "poetry.lock" || base === "uv.lock") return true;
+  if (!base.endsWith(".txt")) return false;
+  return /^requirements[\w.-]*\.txt$/.test(base) || lower.includes("requirements/");
+}
+function pypiName(name) {
+  return name.toLowerCase().replace(/[-_.]+/g, "-");
+}
+var PY_NAME2 = "[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?";
+var PY_VERSION = "[A-Za-z0-9][A-Za-z0-9.!+_-]*";
+var PINNED = new RegExp(`^(${PY_NAME2})\\s*(?:\\[[^\\]]*\\])?\\s*===?\\s*(${PY_VERSION})$`);
+function readRequirements(content) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const joined = content.replace(/\r\n?/g, "\n").replace(/\\\n/g, " ");
+  for (const raw of joined.split("\n")) {
+    let line = raw.replace(/(^|\s)#.*$/, "").trim();
+    if (line.length === 0 || line.startsWith("-")) continue;
+    line = line.split(";")[0].replace(/\s--hash=\S+/g, "").trim();
+    const m = PINNED.exec(line);
+    if (!m) continue;
+    const entry = { name: pypiName(m[1]), version: m[2] };
+    const k = `${entry.name}@${entry.version}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(entry);
+  }
+  return out;
+}
+function readTomlPackages(content) {
+  const text = content.replace(/\r\n?/g, "\n");
+  const parts = text.split(/^\[\[package\]\][ \t]*$/m);
+  if (parts.length < 2) return null;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const part of parts.slice(1)) {
+    const own = part.split(/^\[/m)[0];
+    const name = /^name\s*=\s*"([^"\n]+)"\s*$/m.exec(own)?.[1];
+    const version = /^version\s*=\s*"([^"\n]+)"\s*$/m.exec(own)?.[1];
+    if (!name || !version || !new RegExp(`^${PY_NAME2}$`).test(name) || !new RegExp(`^${PY_VERSION}$`).test(version)) continue;
+    const entry = { name: pypiName(name), version };
+    const k = `${entry.name}@${entry.version}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(entry);
+  }
+  return out;
+}
 function parseLockfile(path, content) {
   const lower = path.toLowerCase();
+  if (pypiLocksIsOn() && isPythonLockPath(path)) {
+    return lower.endsWith(".txt") ? readRequirements(content) : readTomlPackages(content);
+  }
   if (lower.endsWith("package-lock.json") || lower.endsWith(".json")) {
     return repoWatch_exports.npmLock.readNpmLock(content);
   }
@@ -1336,6 +2061,165 @@ function collectRepoList(repo, commit, paths, read) {
   return { ok: true, body: { version: REPO_LIST_VERSION, repo, commit, lockfiles }, packages: total, missing };
 }
 
+// apps/watch/src/outside/repo/action/prCheck.ts
+var PR_CHECK_ON = true;
+var prCheckForTest;
+function prCheckIsOn() {
+  return prCheckForTest ?? PR_CHECK_ON;
+}
+var MCP_CONFIG_PATHS = [".cursor/mcp.json", ".vscode/mcp.json", ".mcp.json", "mcp.json", "claude_desktop_config.json"];
+var PR_WORKFLOWS_MAX = 30;
+var PR_ROOT_IMAGE_FILES_MAX = 10;
+var PR_LINES = {
+  "PRC-01": "Checked pull request #{pr} at {commit}: {packages} packages, {workflows} workflows, {images} images. Nothing urgent found.",
+  "PRC-02": "Checked pull request #{pr} at {commit}: {urgent} urgent findings. Fix them before this pull request is merged.",
+  "PRC-03": "{level}: {where}{what}",
+  "PRC-04": "Not checked: {what}. This result does not cover it.",
+  "PRC-05": "The site refused the check ({status} {code}). Check that the key is a live repository key and that this repository is listed on your Account page.",
+  "PRC-06": "Could not reach the site, so this pull request was not checked. Run the job again.",
+  "PRC-07": "Could not read {path}, so this pull request was not checked."
+};
+var PR_FINDING_TEXT = {
+  compromised_action: "{subject} is an action whose tags were moved to malicious code ({detail}).",
+  unsafe_trigger: "starts on {subject} and checks out {detail}, so anyone who opens a pull request can run code with this repository's secrets.",
+  unpinned_action: "{subject}@{detail} is used by tag, not by commit.",
+  unpinned_image: "the image {subject} is used by tag, not pinned to a digest.",
+  bad_image: "the image {subject} is at a digest published as malicious ({detail}).",
+  malicious_package: "{subject} is listed as malicious ({detail}).",
+  advisory_package: "{subject} has a published advisory ({detail}).",
+  young_package: "{subject} was published less than 48 hours ago ({detail}).",
+  install_script: "{subject} is new in this pull request and runs an install script when it is installed.",
+  mcp_inline_secret: "the AI tool server {detail} has a secret written into its config ({subject}).",
+  mcp_shell_download: "the AI tool server {detail} downloads and runs a script ({subject}).",
+  mcp_plain_http: "the AI tool server {detail} is reached over plain http ({subject}).",
+  mcp_unpinned_package: "the AI tool server {detail} starts {subject} with no fixed version.",
+  mcp_remote_server: "the AI tool server {detail} runs on another host ({subject})."
+};
+var NOT_CHECKED_TEXT = {
+  advisories: "published advisories and malware",
+  published: "how recently each package was published",
+  installScripts: "install scripts of new packages (the site needs your default branch's list, sent by this Action on that branch)"
+};
+var fill = (line, slots) => line.replace(/\{([a-z]+)\}/g, (m, k) => k in slots ? String(slots[k]) : m);
+function pullRequestOf(env, readFile2) {
+  if (env.GITHUB_EVENT_NAME !== "pull_request" || !env.GITHUB_EVENT_PATH) return null;
+  try {
+    const ev = JSON.parse(readFile2(env.GITHUB_EVENT_PATH) ?? "null");
+    const pr = ev?.pull_request?.number;
+    const commit = ev?.pull_request?.head?.sha;
+    if (typeof pr !== "number" || !Number.isInteger(pr) || pr < 1 || typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) return null;
+    return { pr, commit };
+  } catch {
+    return null;
+  }
+}
+function collectPrCheck(repo, pr, lockfilePaths, readFile2, listDir2) {
+  const lockfiles = [];
+  for (const path of lockfilePaths) {
+    const t = readFile2(path);
+    if (t === null) continue;
+    const entries = parseLockfile(path, t);
+    if (entries === null) return { ok: false, path };
+    const kept = /* @__PURE__ */ new Map();
+    for (const e of entries) kept.set(`${e.name}@${e.version}`, { name: e.name, version: e.version });
+    lockfiles.push({ path, packages: [...kept.values()] });
+  }
+  const workflows = [];
+  const images = [];
+  const addImages = (path, t) => {
+    const read = supplyChain_exports.readImages(path, t);
+    for (const u of read?.uses ?? []) images.push({ path, line: u.line, label: supplyChain_exports.imageLabel(u), name: u.name, digest: u.digest });
+  };
+  const wfNames = listDir2(".github/workflows").filter((n) => /\.ya?ml$/i.test(n)).sort().slice(0, PR_WORKFLOWS_MAX);
+  for (const name of wfNames) {
+    const path = `.github/workflows/${name}`;
+    const t = readFile2(path);
+    if (t === null) continue;
+    const read = supplyChain_exports.readWorkflow(t);
+    if (read) {
+      const actions = read.uses.filter((u) => !u.firstParty).map((u) => ({ action: u.action, ref: u.ref }));
+      workflows.push({ path, findings: [...read.findings], actions });
+    }
+    addImages(path, t);
+  }
+  const rootImageFiles = listDir2("").filter((n) => supplyChain_exports.imageFileSource(n) !== null).sort().slice(0, PR_ROOT_IMAGE_FILES_MAX);
+  for (const path of rootImageFiles) {
+    const t = readFile2(path);
+    if (t !== null) addImages(path, t);
+  }
+  const mcp = [];
+  for (const path of MCP_CONFIG_PATHS) {
+    const t = readFile2(path);
+    if (t === null) continue;
+    const read = supplyChain_exports.readMcpConfig(t);
+    if (!read) continue;
+    mcp.push({
+      path,
+      findings: read.findings.map((f) => ({ kind: f.kind, server: f.server, subject: f.subject })),
+      packages: read.packages.filter((p) => p.version !== null && p.version !== "latest").map((p) => ({ ecosystem: p.ecosystem, name: p.name, version: p.version }))
+    });
+  }
+  return { ok: true, body: { version: 1, repo, commit: pr.commit, pr: pr.pr, lockfiles, workflows, images: images.slice(0, 200), mcp } };
+}
+function findingLine(f) {
+  const what = typeof f.code === "string" ? PR_FINDING_TEXT[f.code] : void 0;
+  if (!what || f.level !== "urgent" && f.level !== "notice") return null;
+  const s = (v) => typeof v === "string" ? v.replace(/[\u0000-\u001f]/g, " ").slice(0, 200) : "";
+  const where = s(f.path) === "" ? "" : `${s(f.path)}${typeof f.line === "number" && f.line > 0 ? ` line ${f.line}` : ""}: `;
+  return fill(PR_LINES["PRC-03"], { level: f.level === "urgent" ? "URGENT" : "Notice", where, what: fill(what, { subject: s(f.subject), detail: s(f.detail) }) });
+}
+async function runPrCheck(env, deps, key, origin, pr) {
+  const paths = lockfilePathsOf(env.INPUT_LOCKFILES);
+  if (paths === null) return 1;
+  const got = collectPrCheck(env.GITHUB_REPOSITORY ?? "", pr, paths, deps.readFile, deps.listDir);
+  if (!got.ok) {
+    deps.log(fill(PR_LINES["PRC-07"], { path: got.path }));
+    return 1;
+  }
+  const body = JSON.stringify(got.body);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) await deps.sleep(5e3);
+    let res;
+    try {
+      res = await deps.fetch(`${origin}/api/billing/outside/pr-check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
+        body
+      });
+    } catch {
+      continue;
+    }
+    if (res.status === 429 || res.status >= 500) continue;
+    let answer = null;
+    try {
+      answer = await res.json();
+    } catch {
+      answer = null;
+    }
+    if (res.status !== 200 || !answer || !Array.isArray(answer.findings)) {
+      const code = typeof answer?.error === "string" ? String(answer.error).replace(/[^a-z_]/g, "").slice(0, 40) : "";
+      deps.log(fill(PR_LINES["PRC-05"], { status: res.status, code }));
+      return 1;
+    }
+    let urgent = 0;
+    for (const f of answer.findings) {
+      const line = findingLine(f ?? {});
+      if (line === null) continue;
+      if (f.level === "urgent") urgent += 1;
+      deps.log(line);
+    }
+    const checked = answer.checked ?? {};
+    for (const k of Object.keys(NOT_CHECKED_TEXT)) {
+      if (checked[k] === false) deps.log(fill(PR_LINES["PRC-04"], { what: NOT_CHECKED_TEXT[k] }));
+    }
+    const counts = { pr: pr.pr, commit: pr.commit.slice(0, 7), packages: typeof answer.packages === "number" ? answer.packages : 0, workflows: got.body.workflows.length, images: got.body.images.length, urgent };
+    deps.log(fill(urgent > 0 ? PR_LINES["PRC-02"] : PR_LINES["PRC-01"], counts));
+    return urgent > 0 ? 1 : 0;
+  }
+  deps.log(PR_LINES["PRC-06"]);
+  return 1;
+}
+
 // apps/watch/src/outside/repo/action/main.ts
 var ACTION_LINES = {
   "RA-01": "Sent {packages} packages from {files} lockfiles at commit {commit}.",
@@ -1349,7 +2233,7 @@ var ACTION_LINES = {
   "RA-09": "Could not reach the site, so nothing was sent. The next run will try again.",
   "RA-10": "Not found, so not sent: {paths}."
 };
-var fill = (line, slots) => line.replace(/\{([a-z]+)\}/g, (m, k) => k in slots ? String(slots[k]) : m);
+var fill2 = (line, slots) => line.replace(/\{([a-z]+)\}/g, (m, k) => k in slots ? String(slots[k]) : m);
 function siteOriginOf(input) {
   if (!input) return null;
   try {
@@ -1384,6 +2268,16 @@ async function runAction(env, deps) {
     deps.log(ACTION_LINES["RA-05"]);
     return 1;
   }
+  if (prCheckIsOn() && deps.listDir && (env.INPUT_PR_CHECK ?? "").trim().toLowerCase() === "on") {
+    const pr = pullRequestOf(env, deps.readFile);
+    if (pr) {
+      if (lockfilePathsOf(env.INPUT_LOCKFILES) === null) {
+        deps.log(ACTION_LINES["RA-06"]);
+        return 1;
+      }
+      return runPrCheck(env, { ...deps, listDir: deps.listDir }, key, origin, pr);
+    }
+  }
   if (!onDefaultBranch(env, deps.readFile)) {
     deps.log(ACTION_LINES["RA-02"]);
     return 0;
@@ -1395,8 +2289,8 @@ async function runAction(env, deps) {
   }
   const got = collectRepoList(repo, commit, paths, deps.readFile);
   if (!got.ok) {
-    if (got.problem === "no_lockfile") deps.log(fill(ACTION_LINES["RA-03"], { paths: paths.join(", ") }));
-    else if (got.problem === "unreadable") deps.log(fill(ACTION_LINES["RA-04"], { path: got.path ?? "" }));
+    if (got.problem === "no_lockfile") deps.log(fill2(ACTION_LINES["RA-03"], { paths: paths.join(", ") }));
+    else if (got.problem === "unreadable") deps.log(fill2(ACTION_LINES["RA-04"], { path: got.path ?? "" }));
     else deps.log(ACTION_LINES["RA-07"]);
     return 1;
   }
@@ -1414,8 +2308,8 @@ async function runAction(env, deps) {
       continue;
     }
     if (res.status === 200) {
-      if (got.missing.length > 0) deps.log(fill(ACTION_LINES["RA-10"], { paths: got.missing.join(", ") }));
-      deps.log(fill(ACTION_LINES["RA-01"], { packages: got.packages, files: got.body.lockfiles.length, commit: commit.slice(0, 7) }));
+      if (got.missing.length > 0) deps.log(fill2(ACTION_LINES["RA-10"], { paths: got.missing.join(", ") }));
+      deps.log(fill2(ACTION_LINES["RA-01"], { packages: got.packages, files: got.body.lockfiles.length, commit: commit.slice(0, 7) }));
       return 0;
     }
     if (res.status === 429 || res.status >= 500) continue;
@@ -1426,7 +2320,7 @@ async function runAction(env, deps) {
     } catch {
       code = "";
     }
-    deps.log(fill(ACTION_LINES["RA-08"], { status: res.status, code }));
+    deps.log(fill2(ACTION_LINES["RA-08"], { status: res.status, code }));
     return 1;
   }
   deps.log(ACTION_LINES["RA-09"]);
@@ -1443,8 +2337,16 @@ function readFile(path) {
     return null;
   }
 }
+function listDir(path) {
+  try {
+    return (0, import_node_fs.readdirSync)((0, import_node_path.join)(workspace, path), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
 void runAction(process.env, {
   readFile,
+  listDir,
   fetch: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(3e4) }),
   log: (line) => console.log(line),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
