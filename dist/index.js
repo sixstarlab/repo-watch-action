@@ -1291,10 +1291,12 @@ function readYarnLock(text) {
 // packages/core/src/supplyChain/index.ts
 var supplyChain_exports = {};
 __export(supplyChain_exports, {
+  CALL_HOME_HOSTS: () => CALL_HOME_HOSTS,
   DEPS_DEV_BATCH_MAX: () => DEPS_DEV_BATCH_MAX,
   DEPS_DEV_BATCH_PATH: () => DEPS_DEV_BATCH_PATH,
   DEPS_DEV_HOST: () => DEPS_DEV_HOST,
   DEPS_DEV_YOUNG_MS: () => DEPS_DEV_YOUNG_MS,
+  DIRECT_DEPS_MAX: () => DIRECT_DEPS_MAX,
   DOCKER_HUB_REGISTRY: () => DOCKER_HUB_REGISTRY,
   FIRST_PARTY_OWNERS: () => FIRST_PARTY_OWNERS,
   FULL_SHA: () => FULL_SHA,
@@ -1304,21 +1306,39 @@ __export(supplyChain_exports, {
   MCP_MAX_BYTES: () => MCP_MAX_BYTES,
   MCP_MAX_SERVERS: () => MCP_MAX_SERVERS,
   OSV_ACTIONS_ECOSYSTEM: () => OSV_ACTIONS_ECOSYSTEM,
+  PROJECT_ADVISORIES_MAX: () => PROJECT_ADVISORIES_MAX,
+  PROJECT_ADVISORY_PACKAGES_MAX: () => PROJECT_ADVISORY_PACKAGES_MAX,
+  STARTUP_FILE_PATHS: () => STARTUP_FILE_PATHS,
+  STARTUP_HOOKS_DIR: () => STARTUP_HOOKS_DIR,
+  STARTUP_HOOKS_MAX: () => STARTUP_HOOKS_MAX,
+  STARTUP_MAX_BYTES: () => STARTUP_MAX_BYTES,
+  STARTUP_MAX_COMMANDS: () => STARTUP_MAX_COMMANDS,
+  STARTUP_TRACKED_RE: () => STARTUP_TRACKED_RE,
   WORKFLOW_MAX_BYTES: () => WORKFLOW_MAX_BYTES,
+  WORKSPACE_PATTERNS_MAX: () => WORKSPACE_PATTERNS_MAX,
   actionRefAffected: () => actionRefAffected,
   depsDevBatchBody: () => depsDevBatchBody,
   depsDevVersionUrl: () => depsDevVersionUrl,
+  directDependencyNames: () => directDependencyNames,
   dockerHubTagPath: () => dockerHubTagPath,
+  downloadsAndRuns: () => downloadsAndRuns,
   findKnownBadImage: () => findKnownBadImage,
   holdsVariable: () => holdsVariable,
   imageFileSource: () => imageFileSource,
   imageLabel: () => imageLabel,
+  inVulnerableRange: () => inVulnerableRange,
   isReleaseTag: () => isReleaseTag,
   isYoung: () => isYoung,
   knownBadDigest: () => knownBadDigest,
+  listedDirs: () => listedDirs,
+  lockfileDir: () => lockfileDir,
+  manifestVersion: () => manifestVersion,
+  matchProjectAdvisories: () => matchProjectAdvisories,
+  npmRepoOfDoc: () => npmRepoOfDoc,
   osvActionPackageQueries: () => osvActionPackageQueries,
   osvActionQueries: () => osvActionQueries,
   parseImageRef: () => parseImageRef,
+  pnpmWorkspacePatterns: () => pnpmWorkspacePatterns,
   readActionRef: () => readActionRef,
   readDepsDevBatch: () => readDepsDevBatch,
   readDepsDevVersion: () => readDepsDevVersion,
@@ -1327,12 +1347,18 @@ __export(supplyChain_exports, {
   readMcpConfig: () => readMcpConfig,
   readOsvActionAnswer: () => readOsvActionAnswer,
   readOsvPackageAnswer: () => readOsvPackageAnswer,
+  readProjectAdvisories: () => readProjectAdvisories,
+  readStartupFile: () => readStartupFile,
   readWorkflow: () => readWorkflow,
+  readWorkflowPosture: () => readWorkflowPosture,
   runnerPackage: () => runnerPackage,
   secretTriggers: () => secretTriggers,
   shortDigest: () => shortDigest,
   splitNpmSpec: () => splitNpmSpec,
-  splitPySpec: () => splitPySpec
+  splitPySpec: () => splitPySpec,
+  startupToolOf: () => startupToolOf,
+  stripJsonc: () => stripJsonc,
+  workspacePatterns: () => workspacePatterns
 });
 
 // packages/core/src/supplyChain/workflows.ts
@@ -1427,6 +1453,53 @@ function readWorkflow(text, compromised = KNOWN_COMPROMISED_ACTIONS) {
     }
   });
   return { uses, findings };
+}
+var CALL_HOME_HOSTS = ["webhook.site", "oast.fun", "oast.live", "oast.me", "oast.pro", "oast.site"];
+var STORED_KEY_NAMES = {
+  "aws-access-key-id": "aws",
+  "aws-secret-access-key": "aws",
+  aws_access_key_id: "aws",
+  aws_secret_access_key: "aws",
+  creds: "azure",
+  azure_client_secret: "azure",
+  azure_credentials: "azure",
+  credentials_json: "google",
+  service_account_key: "google",
+  google_credentials: "google"
+};
+var KEY_VALUE_LINE = /^\s*(?:-\s+)?([A-Za-z_][A-Za-z0-9_-]{0,63})\s*:\s*(.+?)\s*$/;
+var FROM_SECRETS = /\bsecrets\s*\.\s*[A-Za-z_]/;
+function hostPattern(host) {
+  const h = host.replace(/[.]/g, "\\.");
+  return new RegExp(`(?<![a-z0-9-])${h}(?![a-z0-9-]|\\.[a-z0-9])`);
+}
+var CALL_HOME_PATTERNS = CALL_HOME_HOSTS.map((host) => ({ host, re: hostPattern(host) }));
+function readWorkflowPosture(text) {
+  if (typeof text !== "string" || text.length > WORKFLOW_MAX_BYTES) return null;
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (!lines.some((l) => /^jobs\s*:/.test(stripComment(l)))) return null;
+  const findings = [];
+  const hostsSeen = /* @__PURE__ */ new Set();
+  const cloudsSeen = /* @__PURE__ */ new Set();
+  lines.forEach((raw, i) => {
+    const line = stripComment(raw);
+    const lower = line.toLowerCase();
+    for (const { host, re } of CALL_HOME_PATTERNS) {
+      if (hostsSeen.has(host) || !re.test(lower)) continue;
+      hostsSeen.add(host);
+      findings.push({ kind: "CALL_HOME_HOST", line: i + 1, subject: host, detail: "" });
+    }
+    const kv = KEY_VALUE_LINE.exec(line);
+    if (kv) {
+      const name = kv[1];
+      const cloud = Object.prototype.hasOwnProperty.call(STORED_KEY_NAMES, name.toLowerCase()) ? STORED_KEY_NAMES[name.toLowerCase()] : null;
+      if (cloud !== null && !cloudsSeen.has(cloud) && FROM_SECRETS.test(kv[2])) {
+        cloudsSeen.add(cloud);
+        findings.push({ kind: "STORED_CLOUD_KEY", line: i + 1, subject: cloud, detail: name });
+      }
+    }
+  });
+  return findings;
 }
 function osvActionQueries(uses, max = 200) {
   const out = [];
@@ -1935,6 +2008,386 @@ function shortDigest(digest) {
   return digest.startsWith("sha256:") ? `sha256:${digest.slice(7, 19)}` : digest.slice(0, 19);
 }
 
+// packages/core/src/supplyChain/startupFiles.ts
+var STARTUP_FILE_PATHS = [".claude/settings.json", ".claude/settings.local.json", ".cursor/hooks.json", ".vscode/tasks.json", ".continue/config.yaml"];
+var STARTUP_HOOKS_DIR = ".claude/hooks";
+var STARTUP_HOOKS_MAX = 10;
+var STARTUP_MAX_BYTES = 256 * 1024;
+var STARTUP_MAX_COMMANDS = 100;
+var STARTUP_TRACKED_RE = /(^|\/)\.claude\/(settings(\.local)?\.json$|hooks\/)|(^|\/)\.cursor\/hooks\.json$|(^|\/)\.vscode\/tasks\.json$|(^|\/)\.continue\/config\.yaml$/;
+var DOWNLOADER = /\b(curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b/i;
+var RUNS_IT = /(\|\s*(sudo\s+)?(sh|bash|zsh|dash|python3?|node|perl|ruby|iex|invoke-expression)\b|\biex\b|\binvoke-expression\b|\b(sh|bash|zsh)\s+(-c\s+)?["']?\$\(\s*(curl|wget)\b|\beval\s+["']?\$\(\s*(curl|wget)\b|<\(\s*(curl|wget)\b)/i;
+function downloadsAndRuns(command) {
+  return DOWNLOADER.test(command) && RUNS_IT.test(command);
+}
+function startupToolOf(path) {
+  if (path === ".claude/settings.json" || path === ".claude/settings.local.json" || path.startsWith(`${STARTUP_HOOKS_DIR}/`)) return "Claude Code";
+  if (path === ".cursor/hooks.json") return "Cursor";
+  if (path === ".vscode/tasks.json") return "VS Code";
+  if (path === ".continue/config.yaml") return "Continue";
+  return null;
+}
+function strings2(v) {
+  return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+}
+function label(s) {
+  return s.replace(/[^A-Za-z0-9 ._:#-]/g, "").slice(0, 80) || "unnamed";
+}
+function stripJsonc(text) {
+  let out = "";
+  let i = 0;
+  let inString = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === "\\" && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (c === '"') inString = false;
+      i += 1;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      i += 1;
+    } else if (c === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+    } else if (c === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? text.length : end + 2;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+function parseJson(text, comments) {
+  try {
+    const v = JSON.parse(comments ? stripJsonc(text) : text);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+function hookCommands(hooks, nested) {
+  const out = [];
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return out;
+  for (const [event, list] of Object.entries(hooks)) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((entry, i) => {
+      if (!entry || typeof entry !== "object") return;
+      const e = entry;
+      const inner = nested ? Array.isArray(e.hooks) ? e.hooks : [] : [e];
+      inner.forEach((h, j) => {
+        if (!h || typeof h !== "object") return;
+        const cmd = h.command;
+        if (typeof cmd === "string" && cmd.trim() !== "") out.push({ where: label(`hook ${event} #${i + 1}${nested ? `.${j + 1}` : ""}`), sig: cmd });
+      });
+    });
+  }
+  return out;
+}
+var CLAUDE_HELPERS = ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper"];
+function claudeSettings(root) {
+  const out = hookCommands(root.hooks, true);
+  for (const k of CLAUDE_HELPERS) if (typeof root[k] === "string" && root[k].trim() !== "") out.push({ where: k, sig: root[k] });
+  const sl = root.statusLine;
+  if (sl && typeof sl === "object" && typeof sl.command === "string") out.push({ where: "statusLine", sig: sl.command });
+  return out;
+}
+function vscodeTasks(root) {
+  const out = [];
+  if (!Array.isArray(root.tasks)) return out;
+  root.tasks.forEach((t, i) => {
+    if (!t || typeof t !== "object") return;
+    const task = t;
+    const run = task.runOptions && typeof task.runOptions === "object" ? task.runOptions.runOn : void 0;
+    if (run !== "folderOpen") return;
+    const command = typeof task.command === "string" ? task.command : "";
+    if (command.trim() === "") return;
+    out.push({ where: label(`task #${i + 1} on folder open`), sig: [command, ...strings2(task.args)].join(" ") });
+  });
+  return out;
+}
+function continueConfig(text) {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  const unquote3 = (s) => s.trim().replace(/^["']|["']$/g, "");
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^\s*(?:-\s+)?command:\s*(.+?)\s*$/.exec(lines[i]);
+    if (!m) continue;
+    const parts = [unquote3(m[1])];
+    for (let j = i + 1; j < lines.length && j <= i + 40; j += 1) {
+      const line = lines[j];
+      const inline = /^\s*args:\s*\[(.*)\]\s*$/.exec(line);
+      if (inline) {
+        parts.push(...inline[1].split(",").map(unquote3).filter((x) => x !== ""));
+        break;
+      }
+      if (/^\s*args:\s*$/.test(line)) {
+        for (let k = j + 1; k < lines.length && /^\s*-\s+/.test(lines[k]); k += 1) parts.push(unquote3(lines[k].replace(/^\s*-\s+/, "")));
+        break;
+      }
+      if (/^\s*-\s+\w+:/.test(line) || /^\S/.test(line)) break;
+    }
+    out.push({ where: label(`command on line ${i + 1}`), sig: parts.join(" ") });
+  }
+  return out;
+}
+function hookScript(text) {
+  if (text.includes("\0")) return [];
+  return text.split(/\r?\n/).map((l, i) => ({ l: l.trim(), i })).filter(({ l }) => l !== "" && !l.startsWith("#") && !l.startsWith("//")).map(({ l, i }) => ({ where: `line ${i + 1}`, sig: l }));
+}
+function readStartupFile(path, text) {
+  const tool = startupToolOf(path);
+  if (!tool || text.length > STARTUP_MAX_BYTES) return null;
+  let commands;
+  if (path.startsWith(`${STARTUP_HOOKS_DIR}/`)) {
+    commands = hookScript(text);
+  } else if (path === ".continue/config.yaml") {
+    commands = continueConfig(text);
+  } else {
+    const root = parseJson(text, path === ".vscode/tasks.json" || path.startsWith(".claude/"));
+    if (!root) return null;
+    commands = path === ".cursor/hooks.json" ? hookCommands(root.hooks, false) : path === ".vscode/tasks.json" ? vscodeTasks(root) : claudeSettings(root);
+  }
+  commands = commands.slice(0, STARTUP_MAX_COMMANDS);
+  const findings = commands.filter((c) => downloadsAndRuns(c.sig)).map((c) => ({ kind: "STARTUP_SHELL_DOWNLOAD", where: c.where }));
+  return { tool, commands, findings };
+}
+
+// packages/core/src/supplyChain/projectAdvisories.ts
+var PROJECT_ADVISORIES_MAX = 100;
+var PROJECT_ADVISORY_PACKAGES_MAX = 20;
+var GHSA_RE = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
+var NPM_NAME_RE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+var ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function cleanPatched(v) {
+  if (typeof v !== "string") return "";
+  const t = v.replace(/[^0-9A-Za-z.,<>=| -]/g, "").replace(/\s+/g, " ").trim();
+  return t.length > 80 ? `${t.slice(0, 77)}...` : t;
+}
+function severityOf(v) {
+  return v === "critical" || v === "high" || v === "medium" || v === "low" ? v : "unknown";
+}
+function readProjectAdvisories(answer) {
+  if (!Array.isArray(answer)) return null;
+  const advisories = [];
+  let skipped = 0;
+  for (const a of answer) {
+    if (advisories.length >= PROJECT_ADVISORIES_MAX) {
+      skipped += 1;
+      continue;
+    }
+    if (!isRecord(a) || typeof a.ghsa_id !== "string" || !GHSA_RE.test(a.ghsa_id) || typeof a.published_at !== "string" || !ISO_RE.test(a.published_at)) {
+      skipped += 1;
+      continue;
+    }
+    if (a.state !== void 0 && a.state !== "published") continue;
+    const packages = [];
+    for (const v of Array.isArray(a.vulnerabilities) ? a.vulnerabilities : []) {
+      if (packages.length >= PROJECT_ADVISORY_PACKAGES_MAX) break;
+      if (!isRecord(v) || !isRecord(v.package)) continue;
+      const eco = v.package.ecosystem;
+      const name = v.package.name;
+      if (eco !== "npm" || typeof name !== "string" || name.length > 214 || !NPM_NAME_RE.test(name)) continue;
+      if (typeof v.vulnerable_version_range !== "string" || v.vulnerable_version_range.length > 200) continue;
+      packages.push({ name, range: v.vulnerable_version_range, patched: cleanPatched(v.patched_versions) });
+    }
+    if (packages.length === 0) continue;
+    advisories.push({ id: a.ghsa_id, severity: severityOf(a.severity), publishedAt: a.published_at, packages });
+  }
+  return { advisories, skipped };
+}
+function releaseOf(v) {
+  const m = /^v?(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/.exec(v.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+function cmp(a, b) {
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  return 0;
+}
+function comparatorsOf(alternative) {
+  const joined = alternative.replace(/(>=|<=|>|<|=)\s+/g, "$1");
+  const parts = joined.split(/[,\s]+/).filter((p) => p.length > 0);
+  if (parts.length === 0 || parts.length > 4) return null;
+  const out = [];
+  for (const p of parts) {
+    const m = /^(>=|<=|>|<|=)?(.+)$/.exec(p);
+    const v = m ? releaseOf(m[2]) : null;
+    if (!m || !v) return null;
+    out.push({ op: m[1] ?? "=", v });
+  }
+  return out;
+}
+function inVulnerableRange(version, range) {
+  const v = releaseOf(version);
+  if (!v) return null;
+  const alternatives = range.split("||");
+  if (alternatives.length > 4) return null;
+  let judged = false;
+  for (const alt of alternatives) {
+    const comps = comparatorsOf(alt.trim());
+    if (!comps) return null;
+    judged = true;
+    const hit = comps.every(({ op, v: w }) => {
+      const c = cmp(v, w);
+      return op === ">=" ? c >= 0 : op === ">" ? c > 0 : op === "<=" ? c <= 0 : op === "<" ? c < 0 : c === 0;
+    });
+    if (hit) return true;
+  }
+  return judged ? false : null;
+}
+function matchProjectAdvisories(advisories, entries) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const e of entries) {
+    const s = byName.get(e.name) ?? /* @__PURE__ */ new Set();
+    s.add(e.version);
+    byName.set(e.name, s);
+  }
+  const matches = [];
+  const seen = /* @__PURE__ */ new Set();
+  let notJudged = 0;
+  for (const a of advisories) {
+    for (const p of a.packages) {
+      for (const version of byName.get(p.name) ?? []) {
+        const hit = inVulnerableRange(version, p.range);
+        if (hit === null) {
+          notJudged += 1;
+          continue;
+        }
+        if (!hit) continue;
+        const seenKey = `${p.name}@${version} ${a.id}`;
+        if (seen.has(seenKey)) continue;
+        seen.add(seenKey);
+        matches.push({ id: a.id, severity: a.severity, publishedAt: a.publishedAt, name: p.name, version, patched: p.patched, seenKey });
+      }
+    }
+  }
+  matches.sort((x, y) => x.id < y.id ? -1 : x.id > y.id ? 1 : x.name < y.name ? -1 : x.name > y.name ? 1 : x.version < y.version ? -1 : x.version > y.version ? 1 : 0);
+  return { matches, notJudged };
+}
+
+// packages/core/src/supplyChain/directDeps.ts
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var NPM_NAME_RE2 = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+var OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+var REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+var GH_HOST = ["github", "com"].join(".");
+var DIRECT_DEPS_MAX = 500;
+function directDependencyNames(text) {
+  let doc;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord2(doc)) return null;
+  const names = /* @__PURE__ */ new Set();
+  for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    const block = doc[field];
+    if (!isRecord2(block)) continue;
+    for (const name of Object.keys(block)) {
+      if (names.size >= DIRECT_DEPS_MAX) break;
+      if (name.length <= 214 && NPM_NAME_RE2.test(name)) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+var SEGMENT_RE = /^[A-Za-z0-9_@-][A-Za-z0-9._@-]{0,99}$/;
+function safeDir(path) {
+  const p = path.replace(/^\.\//, "").replace(/\/+$/, "");
+  const parts = p.split("/");
+  return parts.length >= 1 && parts.length <= 4 && parts.every((s) => SEGMENT_RE.test(s)) ? p : null;
+}
+var WORKSPACE_PATTERNS_MAX = 20;
+function sortPatterns(raw) {
+  const dirs = /* @__PURE__ */ new Set();
+  const parents = /* @__PURE__ */ new Set();
+  for (const r of raw.slice(0, WORKSPACE_PATTERNS_MAX)) {
+    if (typeof r !== "string" || r.length > 200) continue;
+    const s = r.trim();
+    if (s.endsWith("/*")) {
+      const d = safeDir(s.slice(0, -2));
+      if (d !== null) parents.add(d);
+    } else {
+      const d = safeDir(s);
+      if (d !== null) dirs.add(d);
+    }
+  }
+  return { dirs: [...dirs].sort(), parents: [...parents].sort() };
+}
+function workspacePatterns(text) {
+  let doc;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return { dirs: [], parents: [] };
+  }
+  if (!isRecord2(doc)) return { dirs: [], parents: [] };
+  const w = doc.workspaces;
+  const list = Array.isArray(w) ? w : isRecord2(w) && Array.isArray(w.packages) ? w.packages : [];
+  return sortPatterns(list);
+}
+function pnpmWorkspacePatterns(text) {
+  const out = [];
+  let inPackages = false;
+  for (const line of text.slice(0, 2e4).split(/\r?\n/)) {
+    if (/^\S/.test(line)) inPackages = /^packages\s*:\s*(#.*)?$/.test(line);
+    else if (inPackages) {
+      const m = /^\s+-\s+(?:'([^']*)'|"([^"]*)"|([^\s#]+))\s*(#.*)?$/.exec(line);
+      if (m) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+    }
+  }
+  return sortPatterns(out);
+}
+function lockfileDir(path) {
+  const i = path.lastIndexOf("/");
+  return i < 0 ? "" : safeDir(path.slice(0, i));
+}
+function listedDirs(listing) {
+  if (!Array.isArray(listing)) return [];
+  const out = [];
+  for (const e of listing) {
+    if (isRecord2(e) && e.type === "dir" && typeof e.name === "string" && SEGMENT_RE.test(e.name)) out.push(e.name);
+  }
+  return out.sort();
+}
+function ownerRepo(owner, repo) {
+  const r = repo.replace(/\.git$/, "");
+  return OWNER_RE.test(owner) && REPO_RE.test(r) && r !== "." && r !== ".." ? `${owner}/${r}` : null;
+}
+function npmRepoOfDoc(doc) {
+  if (!isRecord2(doc)) return null;
+  const latest = latestVersionOf(doc);
+  const versions = isRecord2(doc.versions) ? doc.versions : {};
+  const fromLatest = latest !== null && isRecord2(versions[latest]) ? versions[latest].repository : void 0;
+  const field = doc.repository ?? fromLatest;
+  const raw = typeof field === "string" ? field : isRecord2(field) && typeof field.url === "string" ? field.url : null;
+  if (raw === null || raw.length > 300) return null;
+  const s = raw.trim();
+  let m = /^github:([^/\s]+)\/([^/\s#]+)$/.exec(s) ?? /^([^/:@\s]+)\/([^/\s#]+)$/.exec(s);
+  if (m) return ownerRepo(m[1], m[2]);
+  const hostEsc = GH_HOST.replace(".", "\\.");
+  m = new RegExp(`^(?:git\\+)?(?:https?|git|ssh)://(?:git@)?(?:www\\.)?${hostEsc}/([^/\\s]+)/([^/\\s#?]+)`).exec(s) ?? new RegExp(`^git@${hostEsc}:([^/\\s]+)/([^/\\s#?]+)$`).exec(s);
+  return m ? ownerRepo(m[1], m[2]) : null;
+}
+function latestVersionOf(doc) {
+  const tags = doc["dist-tags"];
+  return isRecord2(tags) && typeof tags.latest === "string" && tags.latest.length <= 64 ? tags.latest : null;
+}
+var VERSION_RE2 = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?$/;
+function manifestVersion(doc) {
+  if (!isRecord2(doc) || typeof doc.version !== "string") return null;
+  return doc.version.length <= 64 && VERSION_RE2.test(doc.version) ? doc.version : null;
+}
+
 // apps/watch/src/outside/npmOsv.ts
 var DAY_MS = 24 * 60 * 60 * 1e3;
 
@@ -2220,6 +2673,40 @@ async function runPrCheck(env, deps, key, origin, pr) {
   return 1;
 }
 
+// apps/watch/src/outside/repo/action/startupCheck.ts
+var STARTUP_CHECK_ON = true;
+var forTest;
+function startupCheckIsOn() {
+  return forTest ?? STARTUP_CHECK_ON;
+}
+var STARTUP_LINES = {
+  "SUC-01": "Checked the AI tool start-up files: {files} found, none downloads and runs a script.",
+  "SUC-02": "URGENT: {path} ({where}): {tool} runs a command on its own that downloads and runs a script. Remove it before anyone opens this branch.",
+  "SUC-03": "Not checked: {path}, which could not be read in its own format."
+};
+var fill2 = (line, slots) => line.replace(/\{([a-z]+)\}/g, (m, k) => k in slots ? String(slots[k]) : m);
+function runStartupCheck(readFile2, listDir2, log) {
+  const hooks = listDir2(supplyChain_exports.STARTUP_HOOKS_DIR).filter((n) => /^[A-Za-z0-9._-]{1,100}$/.test(n)).sort().slice(0, supplyChain_exports.STARTUP_HOOKS_MAX).map((n) => `${supplyChain_exports.STARTUP_HOOKS_DIR}/${n}`);
+  let files = 0;
+  let urgent = 0;
+  for (const path of [...supplyChain_exports.STARTUP_FILE_PATHS, ...hooks]) {
+    const text = readFile2(path);
+    if (text === null) continue;
+    files += 1;
+    const read = supplyChain_exports.readStartupFile(path, text);
+    if (!read) {
+      log(fill2(STARTUP_LINES["SUC-03"], { path }));
+      continue;
+    }
+    for (const f of read.findings) {
+      urgent += 1;
+      log(fill2(STARTUP_LINES["SUC-02"], { path, where: f.where, tool: read.tool }));
+    }
+  }
+  if (urgent === 0) log(fill2(STARTUP_LINES["SUC-01"], { files }));
+  return urgent;
+}
+
 // apps/watch/src/outside/repo/action/main.ts
 var ACTION_LINES = {
   "RA-01": "Sent {packages} packages from {files} lockfiles at commit {commit}.",
@@ -2233,7 +2720,7 @@ var ACTION_LINES = {
   "RA-09": "Could not reach the site, so nothing was sent. The next run will try again.",
   "RA-10": "Not found, so not sent: {paths}."
 };
-var fill2 = (line, slots) => line.replace(/\{([a-z]+)\}/g, (m, k) => k in slots ? String(slots[k]) : m);
+var fill3 = (line, slots) => line.replace(/\{([a-z]+)\}/g, (m, k) => k in slots ? String(slots[k]) : m);
 function siteOriginOf(input) {
   if (!input) return null;
   try {
@@ -2260,6 +2747,12 @@ function onDefaultBranch(env, readFile2) {
   return typeof defaultBranch !== "string" || defaultBranch === env.GITHUB_REF_NAME;
 }
 async function runAction(env, deps) {
+  const asked = (env.INPUT_PR_CHECK ?? "").trim().toLowerCase() === "on";
+  const startupUrgent = startupCheckIsOn() && asked && deps.listDir && (env.INPUT_KEY ?? "").trim() !== "" && siteOriginOf(env.INPUT_SITE) !== null ? runStartupCheck(deps.readFile, deps.listDir, deps.log) : 0;
+  const code = await runActionModes(env, deps);
+  return startupUrgent > 0 ? 1 : code;
+}
+async function runActionModes(env, deps) {
   const key = (env.INPUT_KEY ?? "").trim();
   const origin = siteOriginOf(env.INPUT_SITE);
   const repo = env.GITHUB_REPOSITORY ?? "";
@@ -2289,8 +2782,8 @@ async function runAction(env, deps) {
   }
   const got = collectRepoList(repo, commit, paths, deps.readFile);
   if (!got.ok) {
-    if (got.problem === "no_lockfile") deps.log(fill2(ACTION_LINES["RA-03"], { paths: paths.join(", ") }));
-    else if (got.problem === "unreadable") deps.log(fill2(ACTION_LINES["RA-04"], { path: got.path ?? "" }));
+    if (got.problem === "no_lockfile") deps.log(fill3(ACTION_LINES["RA-03"], { paths: paths.join(", ") }));
+    else if (got.problem === "unreadable") deps.log(fill3(ACTION_LINES["RA-04"], { path: got.path ?? "" }));
     else deps.log(ACTION_LINES["RA-07"]);
     return 1;
   }
@@ -2308,8 +2801,8 @@ async function runAction(env, deps) {
       continue;
     }
     if (res.status === 200) {
-      if (got.missing.length > 0) deps.log(fill2(ACTION_LINES["RA-10"], { paths: got.missing.join(", ") }));
-      deps.log(fill2(ACTION_LINES["RA-01"], { packages: got.packages, files: got.body.lockfiles.length, commit: commit.slice(0, 7) }));
+      if (got.missing.length > 0) deps.log(fill3(ACTION_LINES["RA-10"], { paths: got.missing.join(", ") }));
+      deps.log(fill3(ACTION_LINES["RA-01"], { packages: got.packages, files: got.body.lockfiles.length, commit: commit.slice(0, 7) }));
       return 0;
     }
     if (res.status === 429 || res.status >= 500) continue;
@@ -2320,7 +2813,7 @@ async function runAction(env, deps) {
     } catch {
       code = "";
     }
-    deps.log(fill2(ACTION_LINES["RA-08"], { status: res.status, code }));
+    deps.log(fill3(ACTION_LINES["RA-08"], { status: res.status, code }));
     return 1;
   }
   deps.log(ACTION_LINES["RA-09"]);
